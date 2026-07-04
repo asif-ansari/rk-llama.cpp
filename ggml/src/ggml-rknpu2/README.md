@@ -24,9 +24,8 @@ cd rk-llama.cpp
 2. Build the project
 
 ```sh
-mkdir build && cd build
-cmake .. -DLLAMA_RKNPU2=ON
-make -j4
+cmake -B build -DLLAMA_RKNPU2=ON
+cmake --build build --config Release
 ```
 
 3. Run inference

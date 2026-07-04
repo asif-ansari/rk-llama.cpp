@@ -793,7 +793,6 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
             }
         }
     }
-
     return GGML_STATUS_SUCCESS;
 }
 
@@ -1168,6 +1167,18 @@ static void ggml_backend_rknpu_buffer_get_tensor(ggml_backend_buffer_t buffer, c
     }
 }
 
+static void ggml_backend_rknpu_buffer_memset_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor,
+                                                      uint8_t value, size_t offset, size_t size) {
+    auto * ctx = (ggml_backend_rknpu_buffer_context *)buffer->context;
+    std::lock_guard<std::mutex> lock(ctx->mutex);
+
+    size_t tensor_offset_in_virtual = (uintptr_t)tensor->data - (uintptr_t)ctx->virtual_base;
+    auto it = ctx->tensor_allocs.find(tensor_offset_in_virtual);
+    if (it != ctx->tensor_allocs.end()) {
+        memset((uint8_t*)it->second.mem->virt_addr + offset, value, size > 0 ? size : it->second.size);
+    }
+}
+
 static void ggml_backend_rknpu_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
     auto * ctx = (ggml_backend_rknpu_buffer_context *)buffer->context;
     std::lock_guard<std::mutex> lock(ctx->mutex);
@@ -1202,13 +1213,15 @@ static ggml_backend_buffer_t ggml_backend_rknpu_buffer_type_alloc_buffer(ggml_ba
     ctx->total_size = size;
     ctx->name = "rknpu_virtual_buffer";
 
-    static const ggml_backend_buffer_i rknpu_buffer_interface = {
+    static const struct ggml_backend_buffer_i rknpu_buffer_interface = {
         /* .free_buffer   = */ ggml_backend_rknpu_buffer_free_buffer,
         /* .get_base      = */ ggml_backend_rknpu_buffer_get_base,
         /* .init_tensor   = */ ggml_backend_rknpu_buffer_init_tensor,
-        /* .memset_tensor = */ NULL,
+        /* .memset_tensor = */ ggml_backend_rknpu_buffer_memset_tensor,
         /* .set_tensor    = */ ggml_backend_rknpu_buffer_set_tensor,
         /* .get_tensor    = */ ggml_backend_rknpu_buffer_get_tensor,
+        /* .set_tensor_2d = */ NULL,
+        /* .get_tensor_2d = */ NULL,
         /* .cpy_tensor    = */ NULL,
         /* .clear         = */ ggml_backend_rknpu_buffer_clear,
         /* .reset         = */ NULL,
@@ -1324,6 +1337,36 @@ static bool ggml_backend_rknpu_device_supports_op(ggml_backend_dev_t dev, const 
     }
 }
 
+static ggml_backend_graph_plan_t ggml_backend_rknpu_graph_plan_create(ggml_backend_t backend, const struct ggml_cgraph * cgraph) {
+    UNUSED(backend);
+    UNUSED(cgraph);
+    return (ggml_backend_graph_plan_t)1; // Non-null dummy token pointer
+}
+
+static void ggml_backend_rknpu_graph_plan_free(ggml_backend_t backend, ggml_backend_graph_plan_t plan) {
+    UNUSED(backend);
+    UNUSED(plan);
+}
+
+static void ggml_backend_rknpu_graph_plan_update(ggml_backend_t backend, ggml_backend_graph_plan_t plan, const struct ggml_cgraph * cgraph) {
+    UNUSED(backend);
+    UNUSED(plan);
+    UNUSED(cgraph);
+}
+
+static enum ggml_status ggml_backend_rknpu_graph_plan_compute(ggml_backend_t backend, ggml_backend_graph_plan_t plan) {
+    UNUSED(backend);
+    UNUSED(plan);
+    return GGML_STATUS_SUCCESS;
+}
+
+// Modern graph compute stub to satisfy the updated backend interface signature
+static enum ggml_status ggml_backend_rknpu_graph_compute_modern(ggml_backend_t backend, struct ggml_cgraph * cgraph) {
+    GGML_UNUSED(backend);
+    GGML_UNUSED(cgraph);
+    return GGML_STATUS_SUCCESS;
+}
+
 static ggml_backend_t ggml_backend_rknpu_device_init_backend(ggml_backend_dev_t dev, const char * params) {
     UNUSED(dev);
     UNUSED(params);
@@ -1340,6 +1383,8 @@ static ggml_backend_t ggml_backend_rknpu_device_init_backend(ggml_backend_dev_t 
         /* .free               = */ ggml_backend_rknpu_free,
         /* .set_tensor_async   = */ NULL,
         /* .get_tensor_async   = */ NULL,
+        /* .set_tensor_2d_async= */ NULL,
+        /* .get_tensor_2d_async= */ NULL,
         /* .cpy_tensor_async   = */ NULL,
         /* .synchronize        = */ NULL,
         /* .graph_plan_create  = */ NULL,
@@ -1347,9 +1392,6 @@ static ggml_backend_t ggml_backend_rknpu_device_init_backend(ggml_backend_dev_t 
         /* .graph_plan_update  = */ NULL,
         /* .graph_plan_compute = */ NULL,
         /* .graph_compute      = */ ggml_backend_rknpu_graph_compute,
-        /* .event_record       = */ NULL,
-        /* .event_wait         = */ NULL,
-        /* .graph_optimize     = */ NULL,
     };
 
     return new ggml_backend{

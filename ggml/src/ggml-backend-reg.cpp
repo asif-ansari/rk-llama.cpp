@@ -97,6 +97,8 @@
 #elif defined(__GNUC__)
 #    pragma GCC diagnostic push
 #    pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+
 #ifdef GGML_USE_ET
 #include "ggml-et.h"
 #endif

@@ -4495,6 +4495,62 @@ template <typename BLOC_TYPE, int64_t INTER_SIZE, int64_t NB_COLS, ggml_type PAR
                 return;
             }
 
+            const int64_t rcnt = src0_cur_end - src0_cur_start;
+
+            // gemm when the expert has enough tokens: C[token][row], activations packed 4 rows at a time
+            if (nr1 >= 4 && rcnt > 0 && rcnt % 4 == 0 && ne10 % QK8_0 == 0 && ne10 <= 4096) {
+                constexpr int TT = 8;
+                constexpr int RB = 64;
+
+                alignas(64) char  tmp_b[TT * 4096 + TT * (4096 / QK8_0) * 2];
+                alignas(64) float tmp_f[4 * 4096];
+                alignas(64) float tmp_c[TT * RB];
+
+                const int64_t ng1 = nr1 - (nr1 % 4);
+
+                for (int64_t t0 = 0; t0 < ng1; t0 += TT) {
+                    const int64_t tn = MIN(TT, ng1 - t0);
+
+                    for (int64_t q = 0; q < tn; q += 4) {
+                        float * fb = tmp_f;
+                        for (int j = 0; j < 4; ++j) {
+                            const mmid_row_mapping rm = MMID_MATRIX_ROW(cur_a, t0 + q + j);
+                            const float * srow = (const float *) ((const char *) src1->data + (rm.i1 % ne11) * nb11 + rm.i2 * nb12);
+                            memcpy(fb + j * ne10, srow, ne10 * sizeof(float));
+                        }
+                        ggml_quantize_mat_t<INTER_SIZE, PARAM_TYPE>(fb, tmp_b + (q / 4) * 4 * ggml_row_size(PARAM_TYPE, ne10), 4, ne10);
+                    }
+
+                    for (int64_t r0 = src0_cur_start; r0 < src0_cur_end; r0 += RB) {
+                        const int64_t rn = MIN(RB, src0_cur_end - r0);
+
+                        gemm<BLOC_TYPE, INTER_SIZE, NB_COLS, PARAM_TYPE>(ne00, tmp_c, RB,
+                                src0_cur + r0 * nb01, tmp_b, tn, rn);
+
+                        for (int64_t t = 0; t < tn; ++t) {
+                            const mmid_row_mapping rm = MMID_MATRIX_ROW(cur_a, t0 + t);
+                            float * dcol = (float *) ((char *) dst->data + rm.i1 * nb1 + rm.i2 * nb2);
+                            memcpy(dcol + r0, tmp_c + t * RB, rn * sizeof(float));
+                        }
+                    }
+                }
+
+                for (int64_t ir1 = ng1; ir1 < nr1; ++ir1) {
+                    const mmid_row_mapping row_mapping = MMID_MATRIX_ROW(cur_a, ir1);
+
+                    const int64_t i11 = row_mapping.i1 % ne11;
+                    const int64_t i12 = row_mapping.i2;
+
+                    const auto * src1_col = (const char *) wdata + (i11 * nbw1 + i12 * nbw2);
+
+                    gemv<BLOC_TYPE, INTER_SIZE, NB_COLS, PARAM_TYPE>(
+                        ne00, (float *) ((char *) dst->data + (row_mapping.i1 * nb1 + i12 * nb2)) + src0_cur_start, ne01,
+                        src0_cur + src0_cur_start * nb01, src1_col, 1, rcnt);
+                }
+
+                continue;
+            }
+
             for (int ir1 = 0; ir1 < nr1; ir1++) {
                 struct mmid_row_mapping row_mapping = MMID_MATRIX_ROW(cur_a, ir1);
 

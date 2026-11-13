@@ -1297,14 +1297,24 @@ static void ggml_backend_rknpu_buffer_set_tensor(ggml_backend_buffer_t buffer, s
 }
 
 static void ggml_backend_rknpu_buffer_get_tensor(ggml_backend_buffer_t buffer, const struct ggml_tensor * tensor, void * data, size_t offset, size_t size) {
-    auto * ctx = (ggml_backend_rknpu_buffer_context*)buffer->context;
+    ggml_backend_rknpu_buffer_context * ctx = (ggml_backend_rknpu_buffer_context *)buffer->context;
     size_t tensor_offset_in_virtual = (uintptr_t)tensor->data - (uintptr_t)ctx->virtual_base;
 
     std::lock_guard<std::mutex> lock(ctx->mutex);
     auto it = ctx->tensor_allocs.find(tensor_offset_in_virtual);
+
     if (it != ctx->tensor_allocs.end()) {
-        memcpy(data, (uint8_t*)it->second.mem->virt_addr + offset, size);
+        // FIX: the DMA buffer holds the packed NPU representation, which is smaller than
+        // ggml_nbytes(). Callers (e.g. ggml_backend_sched) may ask for the raw tensor size;
+        // copying that many bytes runs off the end of the dma-buf mapping -> SIGSEGV.
+        // Clamp the copy to the backing allocation and zero-fill the remainder.
+        uint8_t* dma_ptr = (uint8_t*)it->second.mem->virt_addr;
+        size_t avail = (offset < it->second.size) ? (it->second.size - offset) : 0;
+        size_t n = (size < avail) ? size : avail;
+        if (n > 0) memcpy(data, dma_ptr + offset, n);
+        if (n < size) memset((uint8_t*)data + n, 0, size - n);
     } else {
+        // Fallback: plain virtual-backed tensor storage
         memcpy(data, (uint8_t*)tensor->data + offset, size);
     }
 }
